@@ -81,7 +81,7 @@ class ScriptBuilder:
         system = (
             "You are an expert YouTube script outliner.\n"
             "Decide how many sections to use and plan each one thoughtfully.\n"
-            "For shorts (<=60s), prefer 1–3 sections (Hook → Value → CTA). "
+            "For shorts (<=60s), prefer 1–3 sections (Hook -> Value -> CTA). "
             "For long-form, prefer 5–9 sections (Intro, Points, Outro).\n"
             "Pick a presentation_style for each section (choose from the allowed list if provided). "
             "If a section relies on current events, statistics, dates, or prices, mark web_search=true.\n"
@@ -113,12 +113,12 @@ class ScriptBuilder:
         )
 
         plan: PlanResponse = resp.output_parsed
-        fixed = _normalize_lengths(plan.sections, total)
+        fixed = self._normalize_lengths(plan.sections, total)
 
         # Convert to your schema: return a list of ScriptSectionInfo (metadata only)
         infos: List[ScriptSectionInfo] = []
         for sp in fixed:
-            style = _coerce_style(sp.presentation_style, req.m_preferred_styles)
+            style = self._coerce_style(sp.presentation_style, req.m_preferred_styles)
             info = ScriptSectionInfo(
                 m_web_search=bool(sp.web_search),
                 m_index=sp.index,
@@ -242,3 +242,40 @@ class ScriptBuilder:
                 delattr(s, "_draft_lines")
 
         return sections
+
+    def _coerce_style(name: str, preferred_styles: Optional[List[PresentationStyle]]) -> PresentationStyle | str:
+        """Map the model's string to one of your allowed PresentationStyle values; fall back safely."""
+        if preferred_styles:
+            # exact (case-insensitive) match to one of the allowed values
+            for s in preferred_styles:
+                if str(s).lower() == name.lower():
+                    return s
+            # fallback to the first preferred style
+            return preferred_styles[0]
+        # generic fallback
+        return "explanatory"
+
+    def _normalize_lengths(plans: List[SectionPlan], total: int) -> List[SectionPlan]:
+        """Ensure lengths sum to `total` and each >= 1s. Extend/trim the last section if needed."""
+        if not plans:
+            return plans
+        s = sum(p.length_s for p in plans)
+        if s == 0:
+            # make one full-length section if something is off
+            return [
+                SectionPlan(index=1, length_s=total, title="Main", talking_points=[], presentation_style="explanatory",
+                            web_search=False)]
+        diff = total - s
+        # adjust the last section by the diff
+        plans[-1].length_s = max(1, plans[-1].length_s + diff)
+        # if we overshot negative, trim earlier ones as needed (rare)
+        while sum(p.length_s for p in plans) > total and len(plans) > 1:
+            overflow = sum(p.length_s for p in plans) - total
+            take = min(overflow, plans[-1].length_s - 1)
+            plans[-1].length_s -= take
+            if take < overflow and len(plans) > 2:
+                plans[-2].length_s = max(1, plans[-2].length_s - (overflow - take))
+        # reindex 1..N (in case the model didn't)
+        for i, p in enumerate(plans, start=1):
+            p.index = i
+        return plans

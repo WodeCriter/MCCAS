@@ -18,10 +18,3 @@ class BuildRequest(BaseModel):
     m_language: str = Field("English", description="Output language.")
     m_preferred_styles: Optional[List[PresentationStyle]] = Field(None, description="Allowed styles to pick from.")
     m_audience: str = Field("general", description="Target audience description.")
-
-    @field_validator("actor_names")
-    def names_match_count(cls, v, values):
-        num = values.get("num_actors")
-        if v is not None and len(v) != num:
-            raise ValueError("actor_names length must equal num_actors")
-        return v
