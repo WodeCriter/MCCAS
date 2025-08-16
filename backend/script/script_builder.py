@@ -153,12 +153,8 @@ class ScriptBuilder:
         by_name = {self._char_name(c): c for c in i_request.m_characters}
 
         for info in i_section_infos:
-            # --- (a) optional research context
-            #research = self._maybe_research(req, info) if getattr(info, "m_web_search", False) else ""
 
-            # --- (b) ask the model to produce voice lines directly
             budget_words = self._approximate_word_budget(info.m_length_s, shorts)
-            per_line_cap = max(12, int(12 * (2.0 if shorts else 2.6)))  # soft line length cap in words
 
             system = (
                 "You are a senior scriptwriter and dialogue editor. "
@@ -181,7 +177,7 @@ class ScriptBuilder:
                     f"Presentation style: {info.m_presentation_style}\n"
                     f"Talking points: {info.m_talking_points}\n"
                     f"{voice_rules}\n"
-                    f"Target budget: ~{budget_words} words total; keep each line under ~{per_line_cap} words.\n"
+                    f"Target budget: ~{budget_words} words total;"
                     "Write directly the lines that will be spoken; avoid meta-instructions or stage directions."
             )
             # Enable web search only when requested on this section
