@@ -19,5 +19,3 @@ class SectionPlan(BaseModel):
     presentation_style: str
     web_search: bool
 
-class PlanResponse(BaseModel):
-    sections: List[SectionPlan]

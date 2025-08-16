@@ -7,9 +7,8 @@ from pydantic import BaseModel
 from backend.script.schemas.build_script_request import BuildRequest
 from backend.script.schemas.script_metadata import ScriptMetaData
 from backend.script.schemas.script_section_info import ScriptSectionInfo
-from backend.script.schemas.script_section import ScriptSection, SectionPlan, PlanResponse
+from backend.script.schemas.script_section import ScriptSection, SectionPlan
 from backend.script.schemas.script import Script
-from backend.schemas.character import Character
 from backend.schemas.presentation_style import PresentationStyle
 from backend.script.schemas.voice_line import VoiceLine
 
@@ -19,6 +18,9 @@ SHORTS_SECTION_RANGE = (1, 3)
 REGULAR_SECTION_RANGE = (5, 9)
 SHORTS_PREFERRED_FLOW = "(Hook -> Value -> CTA)"
 LONG_FORM_PREFERRED_FLOW = "(Intro -> Points -> Outro)"
+
+class PlanResponse(BaseModel):
+    sections: List[SectionPlan]
 
 class StylesResponse(BaseModel):
     styles: List[PresentationStyle]
@@ -30,6 +32,8 @@ class LineDraft(BaseModel):
 class VoiceDraftResponse(BaseModel):
     # final, ordered voice lines for the section
     voice_lines: List[LineDraft]
+
+
 
 # ---------- Config ----------
 @dataclass
