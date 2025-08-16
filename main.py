@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from backend.script.script_builder import ScriptBuilder, ScriptBuilderConfig
 from backend.script.schemas.build_script_request import BuildRequest
 from backend.schemas.character import Character
+import re
 
 
 # ---------- helpers ----------
@@ -69,6 +70,13 @@ def _pydantic_dump(obj: Any) -> Dict[str, Any]:
     except Exception:
         return json.loads(json.dumps(obj, default=lambda o: getattr(o, "__dict__", str(o))))
 
+def _safe_dir_name(name: str) -> str:
+    # keep letters/digits/space/._- then collapse spaces -> single space, trim, and cap length
+    cleaned = re.sub(r"[^\w\-. ]+", "", name, flags=re.UNICODE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:100] or "untitled"
+
+
 
 # ---------- main (no argv) ----------
 def main() -> None:
@@ -101,14 +109,22 @@ def main() -> None:
     builder = ScriptBuilder(builder_cfg)
     script = builder.build(request)
 
-    # Write JSON next to the YAML (e.g., Brands/.../test_shcema.json)
-    out_path = yaml_path.with_suffix(".json")
-    out_path.write_text(json.dumps(_pydantic_dump(script), ensure_ascii=False, indent=2), encoding="utf-8")
+    title = script.m_data.m_title
+    out_dir = Path("output") / _safe_dir_name(title)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Optional: quick preview if builder provides it
-    if hasattr(builder, "quick_preview"):
-        print("\n--- Preview ---")
-        print(builder.quick_preview(script))
+    # JSON
+    (out_dir / "script.json").write_text(
+        json.dumps(_pydantic_dump(script), ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    # Text exports (your Script now has these methods)
+    (out_dir / "script_plain.txt").write_text(script.export_plain_text(), encoding="utf-8")
+    (out_dir / "script_with_speakers.txt").write_text(script.export_with_speakers(), encoding="utf-8")
+    (out_dir / "script_grouped_by_character.txt").write_text(script.export_grouped_by_character(), encoding="utf-8")
+
+
 
 
 if __name__ == "__main__":
