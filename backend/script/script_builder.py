@@ -13,6 +13,10 @@ from backend.schemas.character import Character
 from backend.schemas.presentation_style import PresentationStyle
 from backend.script.schemas.voice_line import VoiceLine
 
+LOW_TEMPERATURE = 0.2
+
+class StylesResponse(BaseModel):
+    styles: List[PresentationStyle]
 
 # ---------- Config ----------
 @dataclass
@@ -39,7 +43,7 @@ class ScriptBuilder:
         4) build VoiceLine objects from annotations (or allocate to sole character)
         5) return complete Script
         """
-        script_metadata = self._build_script_metadata(i_request)       # (1)
+        script_metadata = self._build_script_metadata(i_request)# (1)
         sections = self._plan_sections(i_request)               # (2)
         sections = self._draft_sections(i_request, sections)    # (3)
         sections = self._make_voice_lines(i_request, sections)  # (4)
@@ -65,18 +69,18 @@ class ScriptBuilder:
         return metadata
 
     # ===== Step 2: AI chooses number + content + style + web_search; returns LIST[ScriptSectionInfo] =====
-    def _plan_sections(self, req: BuildRequest) -> List[ScriptSectionInfo]:
-        client: OpenAI = self.m_client  # assume initialized in __init__
-        total = int(req.m_desired_length_s)
-        is_shorts = (req.m_platform.lower() in {"shorts", "tiktok", "reels"}) or total <= 60
+    def _plan_sections(self, i_req: BuildRequest) -> List[ScriptSectionInfo]:
+        openai_client: OpenAI = self.m_client
+        total = int(i_req.m_desired_length_s)
+        is_shorts = (i_req.m_platform.lower() in {"shorts", "tiktok", "reels"}) or total <= 60
 
         # Let the AI choose; give it smart hints only.
         desired_range = (1, 3) if is_shorts else (5, 9)
-        if getattr(req, "m_desired_num_of_sections", 0):
-            desired_range = (req.m_desired_num_of_sections, req.m_desired_num_of_sections)
+        if getattr(i_req, "m_desired_num_of_sections", 0):
+            desired_range = (i_req.m_desired_num_of_sections, i_req.m_desired_num_of_sections)
 
         # PresentationStyle guardrail: present allowed values if provided
-        style_options = [str(s) for s in (req.m_preferred_styles or [])]
+        style_options = [str(s) for s in (i_req.m_preferred_styles or [])]
 
         system = (
             "You are an expert YouTube script outliner.\n"
@@ -89,12 +93,12 @@ class ScriptBuilder:
         )
 
         user = (
-            f"Idea: {req.m_idea}\n"
-            f"Niche: {req.m_niche}\n"
-            f"Audience: {req.m_audience}\n"
-            f"Tone: {req.m_tone}\n"
-            f"Language: {req.m_language}\n"
-            f"Platform: {req.m_platform}\n"
+            f"Idea: {i_req.m_idea}\n"
+            f"Niche: {i_req.m_niche}\n"
+            f"Audience: {i_req.m_audience}\n"
+            f"Tone: {i_req.m_tone}\n"
+            f"Language: {i_req.m_language}\n"
+            f"Platform: {i_req.m_platform}\n"
             f"Target total length (s): {total}\n"
             f"Desired section count range: {desired_range[0]}..{desired_range[1]}\n"
             f"Allowed presentation styles (optional): {style_options}\n"
@@ -102,30 +106,30 @@ class ScriptBuilder:
         )
 
         headers = {"x-use-prompt-cache": "true"} if getattr(self.m_config, "use_prompt_caching", True) else None
-        resp = client.responses.parse(
+        resp = openai_client.responses.parse(
             model=self.m_config.model,
             input=[{"role": "system", "content": system},
                    {"role": "user", "content": user}],
             temperature=self.m_config.temperature,
             max_output_tokens=self.m_config.max_output_tokens,
-            response_format=PlanResponse,
+            text_format=PlanResponse,
             extra_headers=headers,
         )
 
         plan: PlanResponse = resp.output_parsed
         fixed = self._normalize_lengths(plan.sections, total)
+        enum_styles = self._refine_styles_with_ai(i_req, fixed)
 
         # Convert to your schema: return a list of ScriptSectionInfo (metadata only)
         infos: List[ScriptSectionInfo] = []
-        for sp in fixed:
-            style = self._coerce_style(sp.presentation_style, req.m_preferred_styles)
+        for section_plan, style in zip(fixed, enum_styles):
             info = ScriptSectionInfo(
-                m_web_search=bool(sp.web_search),
-                m_index=sp.index,
-                m_length_s=sp.length_s,
-                m_character_participants=req.m_characters,  # keep all; subset later if needed
-                m_title=sp.title,
-                m_talking_points=sp.talking_points,
+                m_web_search=bool(section_plan.web_search),
+                m_index=section_plan.index,
+                m_length_s=section_plan.length_s,
+                m_character_participants=i_req.m_characters,
+                m_title=section_plan.title,
+                m_talking_points=section_plan.talking_points,
                 m_presentation_style=style,
             )
             infos.append(info)
@@ -137,10 +141,10 @@ class ScriptBuilder:
                     m_web_search=False,
                     m_index=1,
                     m_length_s=total,
-                    m_character_participants=req.m_characters,
+                    m_character_participants=i_req.m_characters,
                     m_title="Main",
                     m_talking_points=[],
-                    m_presentation_style=_coerce_style("explanatory", req.m_preferred_styles),
+                    m_presentation_style= _coerce_style("explanatory", i_req.m_preferred_styles),
                 )
             ]
         return infos
@@ -243,19 +247,60 @@ class ScriptBuilder:
 
         return sections
 
-    def _coerce_style(name: str, preferred_styles: Optional[List[PresentationStyle]]) -> PresentationStyle | str:
-        """Map the model's string to one of your allowed PresentationStyle values; fall back safely."""
-        if preferred_styles:
-            # exact (case-insensitive) match to one of the allowed values
-            for s in preferred_styles:
-                if str(s).lower() == name.lower():
-                    return s
-            # fallback to the first preferred style
-            return preferred_styles[0]
-        # generic fallback
-        return "explanatory"
+    def _refine_styles_with_ai(self, i_req: BuildRequest, plans: List[SectionPlan]) -> List[PresentationStyle]:
+        """
+        Take coarse plans and ask the model to choose EXACT enum values for each section.
+        Returns: List[PresentationStyle]
+        """
+        # Prepare a compact brief for the model
+        brief = [
+            {
+                "index": p.index,
+                "length_s": p.length_s,
+                "title": p.title,
+                "talking_points": p.talking_points,
+                # 'presentation_style' here is only a hint; we'll re-pick from enums
+                "style_hint": p.presentation_style,
+            }
+            for p in plans
+        ]
 
-    def _normalize_lengths(plans: List[SectionPlan], total: int) -> List[SectionPlan]:
+        allowed = [ps.value for ps in PresentationStyle]
+
+        system = (
+            "You are a YouTube editorial lead. For each section, choose exactly ONE presentation style "
+            "from the allowed list. Match the style to the title, length, and talking points.\n"
+            "Return strict JSON with a 'styles' array aligned to the sections order."
+        )
+        user = (
+            f"Allowed styles: {allowed}\n"
+            f"Language: {i_req.m_language}\n"
+            f"Niche: {i_req.m_niche}\n"
+            f"Tone: {i_req.m_tone}\n"
+            f"Audience: {i_req.m_audience}\n"
+            f"Platform: {i_req.m_platform}\n"
+            f"Sections: {brief}"
+        )
+
+        headers = {"x-use-prompt-cache": "true"} if self.m_config.use_prompt_caching else None
+        resp = self.m_client.responses.parse(
+            model=self.m_config.model,
+            input=[{"role": "system", "content": system},
+                   {"role": "user", "content": user}],
+            temperature=LOW_TEMPERATURE,
+            max_output_tokens=self.m_config.max_output_tokens,
+            text_format=StylesResponse,
+            extra_headers=headers,
+        )
+
+        styles: List[PresentationStyle] = resp.output_parsed.styles
+
+        # Safety: align length to plans; default to 'explanatory' on mismatch
+        if len(styles) != len(plans):
+            styles = (styles + [PresentationStyle.EXPLANATORY] * len(plans))[: len(plans)]
+        return styles
+
+    def _normalize_lengths(self, plans: List[SectionPlan], total: int) -> List[SectionPlan]:
         """Ensure lengths sum to `total` and each >= 1s. Extend/trim the last section if needed."""
         if not plans:
             return plans

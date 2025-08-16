@@ -1,8 +1,4 @@
-from __future__ import annotations
-
-import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,7 +14,7 @@ from backend.schemas.character import Character
 def _coerce_characters(raw: Any) -> List[Character]:
     """
     Accepts either a list of strings (names) or a list of dicts compatible with Character.
-    Returns a list[Character].
+    Returns List[Character].
     """
     if raw is None:
         return []
@@ -26,7 +22,7 @@ def _coerce_characters(raw: Any) -> List[Character]:
         out: List[Character] = []
         for item in raw:
             if isinstance(item, str):
-                out.append(Character(name=item))
+                out.append(Character(m_name=item))
             elif isinstance(item, dict):
                 out.append(Character(**item))
             else:
@@ -37,8 +33,8 @@ def _coerce_characters(raw: Any) -> List[Character]:
 
 def _maybe_map_user_friendly_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    If your YAML uses human-friendly keys, map them to your BuildRequest fields.
-    If you already use m_* keys, this is a no-op.
+    If YAML uses human-friendly keys, map them to BuildRequest fields.
+    No-op if it already uses m_* keys.
     """
     keymap = {
         "idea": "m_idea",
@@ -62,42 +58,29 @@ def _maybe_map_user_friendly_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _pydantic_dump(obj: Any) -> Dict[str, Any]:
-    """
-    Robust serializer for Pydantic v1/v2 or dataclasses.
-    """
+    """Serialize pydantic v2/v1 or dataclasses to a plain dict."""
     if hasattr(obj, "model_dump"):
         return obj.model_dump(exclude_none=True)  # Pydantic v2
     if hasattr(obj, "dict"):
-        return obj.dict(exclude_none=True)  # Pydantic v1
+        return obj.dict(exclude_none=True)        # Pydantic v1
     try:
-        from dataclasses import asdict  # type: ignore
-        return asdict(obj)  # dataclass fallback
+        from dataclasses import asdict
+        return asdict(obj)
     except Exception:
         return json.loads(json.dumps(obj, default=lambda o: getattr(o, "__dict__", str(o))))
 
 
-# ---------- main ----------
-def main(argv: List[str] | None = None) -> None:
-    """
-    Usage:
-      python main_build_from_yaml.py --config config.yaml --out script.json [--preview]
-    """
-    parser = argparse.ArgumentParser(description="Build a YouTube/Shorts script from a YAML request.")
-    parser.add_argument("--config", required=True, help="Path to YAML config with BuildRequest fields.")
-    parser.add_argument("--out", default="script.json", help="Path to write the resulting Script JSON.")
-    parser.add_argument("--preview", action="store_true", help="Print a short preview to stdout.")
-    args = parser.parse_args(argv)
-
+# ---------- main (no argv) ----------
+def main() -> None:
     load_dotenv()
 
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"YAML config not found: {cfg_path}")
+    yaml_path = Path("brands/pienantial_trends/youtube/test_script.yaml")
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"YAML config not found: {yaml_path}")
 
-    with cfg_path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
 
-    # Optional builder config block in YAML
+    # Optional: builder settings inside YAML
     builder_cfg_block = raw.pop("builder_config", {}) or {}
     builder_cfg = ScriptBuilderConfig(
         model=builder_cfg_block.get("model", "gpt-4.1-mini"),
@@ -106,34 +89,26 @@ def main(argv: List[str] | None = None) -> None:
         use_prompt_caching=bool(builder_cfg_block.get("use_prompt_caching", True)),
     )
 
-    # Map user-friendly keys to m_* keys if needed
+    # Map human-friendly keys -> m_* (if needed)
     data = _maybe_map_user_friendly_keys(raw)
 
-    # Coerce characters (names or dicts) -> List[Character]
+    # Coerce characters
     if "m_characters" in data:
         data["m_characters"] = _coerce_characters(data["m_characters"])
 
-    # Build the request (Pydantic validation enforces required fields)
+    # Build request & run
     request = BuildRequest(**data)
-
-    # Build the script
     builder = ScriptBuilder(builder_cfg)
     script = builder.build(request)
 
-    # Serialize and write to JSON
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(_pydantic_dump(script), f, ensure_ascii=False, indent=2)
+    # Write JSON next to the YAML (e.g., Brands/.../test_shcema.json)
+    out_path = yaml_path.with_suffix(".json")
+    out_path.write_text(json.dumps(_pydantic_dump(script), ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if args.preview:
-        # Try a quick preview if available on your builder (optional)
-        preview = getattr(builder, "quick_preview", None)
-        if callable(preview):
-            print("\n--- Preview ---")
-            print(preview(script))
-        else:
-            print("\nPreview not available on this builder.")
+    # Optional: quick preview if builder provides it
+    if hasattr(builder, "quick_preview"):
+        print("\n--- Preview ---")
+        print(builder.quick_preview(script))
 
 
 if __name__ == "__main__":
