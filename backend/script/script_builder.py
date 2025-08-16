@@ -102,7 +102,7 @@ class ScriptBuilder:
             f"Target total length (s): {total}\n"
             f"Desired section count range: {desired_range[0]}..{desired_range[1]}\n"
             f"Allowed presentation styles (optional): {style_options}\n"
-            "For each section return: index, length_s, title, talking_points (2–5), presentation_style, web_search (bool)."
+            "For each section return: index, length_s, title, talking_points (1–5), presentation_style, web_search (bool)."
         )
 
         headers = {"x-use-prompt-cache": "true"} if getattr(self.m_config, "use_prompt_caching", True) else None
@@ -117,12 +117,12 @@ class ScriptBuilder:
         )
 
         plan: PlanResponse = resp.output_parsed
-        fixed = self._normalize_lengths(plan.sections, total)
-        enum_styles = self._refine_styles_with_ai(i_req, fixed)
+        self._validate_section_lengths(plan.sections, total)
+        enum_styles = self._refine_styles_with_ai(i_req, plan.sections)
 
         # Convert to your schema: return a list of ScriptSectionInfo (metadata only)
         infos: List[ScriptSectionInfo] = []
-        for section_plan, style in zip(fixed, enum_styles):
+        for section_plan, style in zip(plan.sections, enum_styles):
             info = ScriptSectionInfo(
                 m_web_search=bool(section_plan.web_search),
                 m_index=section_plan.index,
@@ -137,7 +137,7 @@ class ScriptBuilder:
         return infos
 
     # ===== Step 3: draft script text (+ annotations when >1 character) =====
-    def _draft_sections(self, req: BuildRequest, sections: List[ScriptSection]) -> List[ScriptSection]:
+    def _draft_sections(self, req: BuildRequest, sections: List[ScriptSectionInfo]) -> List[ScriptSection]:
         # Build a compact brief for the model
         brief = [
             dict(
@@ -287,27 +287,13 @@ class ScriptBuilder:
             styles = (styles + [PresentationStyle.EXPLANATORY] * len(plans))[: len(plans)]
         return styles
 
-    def _normalize_lengths(self, plans: List[SectionPlan], total: int) -> List[SectionPlan]:
-        """Ensure lengths sum to `total` and each >= 1s. Extend/trim the last section if needed."""
-        if not plans:
-            return plans
-        s = sum(p.length_s for p in plans)
-        if s == 0:
-            # make one full-length section if something is off
-            return [
-                SectionPlan(index=1, length_s=total, title="Main", talking_points=[], presentation_style="explanatory",
-                            web_search=False)]
-        diff = total - s
-        # adjust the last section by the diff
-        plans[-1].length_s = max(1, plans[-1].length_s + diff)
-        # if we overshot negative, trim earlier ones as needed (rare)
-        while sum(p.length_s for p in plans) > total and len(plans) > 1:
-            overflow = sum(p.length_s for p in plans) - total
-            take = min(overflow, plans[-1].length_s - 1)
-            plans[-1].length_s -= take
-            if take < overflow and len(plans) > 2:
-                plans[-2].length_s = max(1, plans[-2].length_s - (overflow - take))
-        # reindex 1..N (in case the model didn't)
-        for i, p in enumerate(plans, start=1):
+    def _validate_section_lengths(self, i_section_plans: List[SectionPlan], total: int):
+        """Ensure lengths sum to `total` and each >= 1s."""
+        for i, p in enumerate(i_section_plans, start=1):
             p.index = i
-        return plans
+            try:
+                p.length_s = max(1, int(p.length_s))
+            except Exception:
+                p.length_s = 1
+
+        return
