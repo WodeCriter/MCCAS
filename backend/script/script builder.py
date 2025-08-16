@@ -23,20 +23,6 @@ class ScriptBuilderConfig:
     use_prompt_caching: bool = True
 
 
-# ---------- Response models for section drafting ----------
-class Line(BaseModel):
-    voice_actor: Optional[str] = None  # Character name; optional for single-speaker sections
-    text: str
-
-class SectionDraft(BaseModel):
-    m_index: conint(ge=1)
-    m_script_text: str
-    lines: Optional[List[Line]] = None
-
-class DraftResponse(BaseModel):
-    sections: List[SectionDraft]
-
-
 # ---------- Builder ----------
 class ScriptBuilder:
     def __init__(self, i_config: ScriptBuilderConfig | None = None):
