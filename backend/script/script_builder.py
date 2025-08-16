@@ -1,9 +1,9 @@
 from __future__ import annotations
 from openai import OpenAI
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Literal
+from typing import List
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, conint
+from pydantic import BaseModel
 from backend.script.schemas.build_script_request import BuildRequest
 from backend.script.schemas.script_metadata import ScriptMetaData
 from backend.script.schemas.script_section_info import ScriptSectionInfo
@@ -55,11 +55,11 @@ class ScriptBuilder:
         3) generate script per section
         4) return complete Script
         """
-        script_metadata = self._build_script_metadata(i_request)        # (1)
-        section_info_list = self._plan_sections(i_request)              # (2)
-        sections_list = self._compose_sections(i_request, section_info_list) # (3)
+        script_metadata = self._build_script_metadata(i_request)
+        section_info_list = self._plan_sections(i_request)
+        sections_list = self._compose_sections(i_request, section_info_list)
 
-        script = Script(m_data=script_metadata, m_sections=sections_list, m_characters=i_request.m_characters)  # (4)
+        script = Script(m_data=script_metadata, m_sections=sections_list, m_characters=i_request.m_characters)
         return script
 
     # Step 1: Create script metadata
@@ -154,8 +154,8 @@ class ScriptBuilder:
         sections: List[ScriptSection] = []
 
         # Precompute speaker names and mapping
-        speaker_names = [self._char_name(c) for c in i_request.m_characters]
-        by_name = {self._char_name(c): c for c in i_request.m_characters}
+        speaker_names = [c.m_name for c in i_request.m_characters]
+        by_name = {c.m_name: c for c in i_request.m_characters}
 
         for info in i_section_infos:
 
@@ -206,11 +206,11 @@ class ScriptBuilder:
             # --- (c) map line drafts to VoiceLine objects (assign actor for single-speaker)
             final_lines: List[VoiceLine] = []
             if draft.voice_lines:
-                for ln in draft.voice_lines:
+                for line in draft.voice_lines:
                     # choose actor
 
-                    character_name = by_name.get((ln.character_name or "").strip()) or i_request.m_characters[0].m_name
-                    final_lines.append(VoiceLine(m_character=character_name, m_text=ln.text))
+                    character_name = by_name.get((line.character_name or "").strip()).m_name or i_request.m_characters[0].m_name
+                    final_lines.append(VoiceLine(m_character=character_name, m_text=line.text))
             else:
                 # fallback: single blob
                 character_name = i_request.m_characters[0].m_name
@@ -291,9 +291,6 @@ class ScriptBuilder:
                 p.length_s = 1
 
         return
-
-    def _char_name(self, c):
-        return getattr(c, "m_name", getattr(c, "name", "")) or "Speaker"
 
     def _approximate_word_budget(self, length_s: int, shorts: bool) -> int:
         # soft target; you said timing will drift later anyway
