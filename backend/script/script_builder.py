@@ -134,19 +134,6 @@ class ScriptBuilder:
             )
             infos.append(info)
 
-        # Fallback if the model returned nothing usable
-        if not infos:
-            infos = [
-                ScriptSectionInfo(
-                    m_web_search=False,
-                    m_index=1,
-                    m_length_s=total,
-                    m_character_participants=i_req.m_characters,
-                    m_title="Main",
-                    m_talking_points=[],
-                    m_presentation_style= _coerce_style("explanatory", i_req.m_preferred_styles),
-                )
-            ]
         return infos
 
     # ===== Step 3: draft script text (+ annotations when >1 character) =====
