@@ -14,6 +14,11 @@ from backend.schemas.presentation_style import PresentationStyle
 from backend.script.schemas.voice_line import VoiceLine
 
 LOW_TEMPERATURE = 0.2
+MAX_SHORTS_LENGTH_S= 60
+SHORTS_SECTION_RANGE = (1, 3)
+REGULAR_SECTION_RANGE = (5, 9)
+SHORTS_PREFERRED_FLOW = "(Hook -> Value -> CTA)"
+LONG_FORM_PREFERRED_FLOW = "(Intro -> Points -> Outro)"
 
 class StylesResponse(BaseModel):
     styles: List[PresentationStyle]
@@ -78,10 +83,10 @@ class ScriptBuilder:
     def _plan_sections(self, i_req: BuildRequest) -> List[ScriptSectionInfo]:
         openai_client: OpenAI = self.m_client
         total = int(i_req.m_desired_length_s)
-        is_shorts = (i_req.m_platform.lower() in {"shorts", "tiktok", "reels"}) or total <= 60
+        is_shorts = (i_req.m_platform.lower() in {"shorts", "tiktok", "reels"}) or total <= MAX_SHORTS_LENGTH_S
 
         # Let the AI choose; give it smart hints only.
-        desired_range = (1, 3) if is_shorts else (5, 9)
+        desired_range = SHORTS_SECTION_RANGE if is_shorts else REGULAR_SECTION_RANGE
         if getattr(i_req, "m_desired_num_of_sections", 0):
             desired_range = (i_req.m_desired_num_of_sections, i_req.m_desired_num_of_sections)
 
@@ -91,8 +96,8 @@ class ScriptBuilder:
         system = (
             "You are an expert YouTube script outliner.\n"
             "Decide how many sections to use and plan each one thoughtfully.\n"
-            "For shorts (<=60s), prefer 1–3 sections (Hook -> Value -> CTA). "
-            "For long-form, prefer 5–9 sections (Intro, Points, Outro).\n"
+            f"For shorts , prefer {SHORTS_PREFERRED_FLOW}. "
+            f"For long-form, {LONG_FORM_PREFERRED_FLOW}.\n"
             "Pick a presentation_style for each section (choose from the allowed list if provided). "
             "If a section relies on current events, statistics, dates, or prices, mark web_search=true.\n"
             "Return strict JSON that matches the response schema."
