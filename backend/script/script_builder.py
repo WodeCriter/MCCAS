@@ -18,6 +18,14 @@ LOW_TEMPERATURE = 0.2
 class StylesResponse(BaseModel):
     styles: List[PresentationStyle]
 
+class LineDraft(BaseModel):
+    character_name: str
+    text: str
+
+class VoiceDraftResponse(BaseModel):
+    # final, ordered voice lines for the section
+    voice_lines: List[LineDraft]
+
 # ---------- Config ----------
 @dataclass
 class ScriptBuilderConfig:
@@ -44,9 +52,9 @@ class ScriptBuilder:
         """
         script_metadata = self._build_script_metadata(i_request)        # (1)
         section_info_list = self._plan_sections(i_request)              # (2)
-        sections = self._compose_sections(i_request, section_info_list) # (3)
+        sections_list = self._compose_sections(i_request, section_info_list) # (3)
 
-        script = Script(m_data=script_metadata, m_sections=sections, m_characters=i_request.m_characters)  # (4)
+        script = Script(m_data=script_metadata, m_sections=sections_list, m_characters=i_request.m_characters)  # (4)
         return script
 
     # Step 1: Create script metadata
@@ -135,22 +143,21 @@ class ScriptBuilder:
         return infos
 
     # Step 3: Create script text
-    def _compose_sections(self, req: BuildRequest, infos: List[ScriptSectionInfo]) -> List[ScriptSection]:
+    def _compose_sections(self, i_request: BuildRequest, i_section_infos: List[ScriptSectionInfo]) -> List[ScriptSection]:
         """Create final ScriptSection objects: research (optional) ➜ voice lines ➜ script text."""
-        shorts = (req.m_platform.lower() in {"shorts", "tiktok", "reels"} or int(req.m_desired_length_s) <= 60)
+        shorts = (i_request.m_platform.lower() in {"shorts", "tiktok", "reels"} or int(i_request.m_desired_length_s) <= 60)
         sections: List[ScriptSection] = []
 
         # Precompute speaker names and mapping
-        speaker_names = [self._char_name(c) for c in req.m_characters]
-        by_name = {self._char_name(c): c for c in req.m_characters}
-        multi = len(req.m_characters) > 1
+        speaker_names = [self._char_name(c) for c in i_request.m_characters]
+        by_name = {self._char_name(c): c for c in i_request.m_characters}
 
-        for info in infos:
+        for info in i_section_infos:
             # --- (a) optional research context
-            research = self._maybe_research(req, info) if getattr(info, "m_web_search", False) else ""
+            #research = self._maybe_research(req, info) if getattr(info, "m_web_search", False) else ""
 
             # --- (b) ask the model to produce voice lines directly
-            budget_words = self._word_budget(info.m_length_s, shorts)
+            budget_words = self._approximate_word_budget(info.m_length_s, shorts)
             per_line_cap = max(12, int(12 * (2.0 if shorts else 2.6)))  # soft line length cap in words
 
             system = (
@@ -161,16 +168,14 @@ class ScriptBuilder:
             # Clear, strict instructions for speaker labels when multi-actor
             voice_rules = (
                 f"When assigning lines, 'voice_actor' MUST be one of: {speaker_names}."
-                if multi else
-                "There is only one speaker; 'voice_actor' may be omitted."
             )
 
             user = (
-                    f"Language: {req.m_language}\n"
-                    f"Niche: {req.m_niche}\n"
-                    f"Tone: {req.m_tone}\n"
-                    f"Audience: {req.m_audience}\n"
-                    f"Platform: {req.m_platform}\n"
+                    f"Language: {i_request.m_language}\n"
+                    f"Niche: {i_request.m_niche}\n"
+                    f"Tone: {i_request.m_tone}\n"
+                    f"Audience: {i_request.m_audience}\n"
+                    f"Platform: {i_request.m_platform}\n"
                     f"Section index: {info.m_index}\n"
                     f"Section title: {info.m_title}\n"
                     f"Presentation style: {info.m_presentation_style}\n"
@@ -178,8 +183,12 @@ class ScriptBuilder:
                     f"{voice_rules}\n"
                     f"Target budget: ~{budget_words} words total; keep each line under ~{per_line_cap} words.\n"
                     "Write directly the lines that will be spoken; avoid meta-instructions or stage directions."
-                    + (f"\n\nResearch notes (for accuracy):\n{research}" if research else "")
             )
+            # Enable web search only when requested on this section
+            tool_kwargs = {}
+            if getattr(info, "m_web_search", False):
+                tool_kwargs["tools"] = [{"type": "web_search"}]  # enable the tool
+                tool_kwargs["tool_choice"] = "auto"
 
             headers = {"x-use-prompt-cache": "true"} if self.m_config.use_prompt_caching else None
             draft = self.m_client.responses.parse(
@@ -188,30 +197,29 @@ class ScriptBuilder:
                        {"role": "user", "content": user}],
                 temperature=self.m_config.temperature,
                 max_output_tokens=self.m_config.max_output_tokens,
-                response_format=VoiceDraftResponse,
+                text_format=VoiceDraftResponse,
                 extra_headers=headers,
+                **tool_kwargs,
             ).output_parsed
 
-            # --- (c) map line drafts → VoiceLine objects (assign actor for single-speaker)
+            # --- (c) map line drafts to VoiceLine objects (assign actor for single-speaker)
             final_lines: List[VoiceLine] = []
             if draft.voice_lines:
                 for ln in draft.voice_lines:
                     # choose actor
-                    if multi:
-                        actor = by_name.get((ln.voice_actor or "").strip()) or req.m_characters[0]
-                    else:
-                        actor = req.m_characters[0]
-                    final_lines.append(VoiceLine(voice_actor=actor, text=ln.text))
+
+                    character_name = by_name.get((ln.character_name or "").strip()) or i_request.m_characters[0].m_name
+                    final_lines.append(VoiceLine(m_character=character_name, m_text=ln.text))
             else:
                 # fallback: single blob
-                actor = req.m_characters[0]
+                character_name = i_request.m_characters[0].m_name
                 text = (draft.section_text or "").strip()
-                final_lines.append(VoiceLine(voice_actor=actor, text=text or ""))
+                final_lines.append(VoiceLine(m_character=character_name, m_text=text or ""))
 
             # --- (d) assemble the raw script text (what the audience hears)
             # You asked for "the script itself is the raw text being said by the characters"
             # so we concatenate the spoken line texts (no speaker tags) in order.
-            script_text = " ".join([vl.text for vl in final_lines]).strip()
+            script_text = " ".join([vl.m_text for vl in final_lines]).strip()
 
             # --- (e) build the ScriptSection
             section = ScriptSection(m_metadata=info, m_script_text=script_text, voice_lines=final_lines)
@@ -282,3 +290,11 @@ class ScriptBuilder:
                 p.length_s = 1
 
         return
+
+    def _char_name(self, c):
+        return getattr(c, "m_name", getattr(c, "name", "")) or "Speaker"
+
+    def _approximate_word_budget(self, length_s: int, shorts: bool) -> int:
+        # soft target; you said timing will drift later anyway
+        wps = 2.0 if shorts else 2.6
+        return max(20, int(length_s * wps))
